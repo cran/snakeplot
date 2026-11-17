@@ -347,7 +347,13 @@ coerce_activity_input <- function(data) {
 #' @param counts Matrix, data.frame of counts, or data.frame of raw responses.
 #' @param labels Character vector or NULL.
 #' @param levels Character vector or NULL.
-#' @return A list with \code{counts} (matrix), \code{labels}, \code{levels}.
+#' @return A list with \code{counts} (matrix), \code{labels}, \code{levels}
+#'   and \code{scores}. For raw responses, \code{scores} is an integer matrix
+#'   with one row per respondent and one column per item, holding each
+#'   response's position in \code{levels} (\code{NA} for a missing response or
+#'   a value outside \code{levels}); it keeps the pairing of a respondent's
+#'   answers across items, which the counts do not. For counts input,
+#'   \code{scores} is \code{NULL}.
 #' @noRd
 coerce_survey_input <- function(counts, labels, levels) {
   if (is.matrix(counts)) {
@@ -358,7 +364,8 @@ coerce_survey_input <- function(counts, labels, levels) {
     if (is.null(levels) && !is.null(colnames(counts))) {
       levels <- colnames(counts)
     }
-    return(list(counts = counts, labels = labels, levels = levels))
+    return(list(counts = counts, labels = labels, levels = levels,
+                scores = NULL))
   }
 
   if (is.data.frame(counts)) {
@@ -413,8 +420,16 @@ coerce_survey_input <- function(counts, labels, levels) {
         paste0(nms, " (n=", rowSums(count_mat), ")")
       }
 
+      # Respondent x item level positions, kept for statistics that need
+      # the pairing of answers within a respondent (item correlations)
+      scores <- vapply(counts, function(col) {
+        match(as.character(col), all_levels)
+      }, integer(nrow(counts)))
+      scores <- matrix(scores, nrow = nrow(counts),
+                       dimnames = list(NULL, names(counts)))
+
       return(list(counts = count_mat, labels = auto_labels,
-                  levels = all_levels))
+                  levels = all_levels, scores = scores))
     }
 
     # Otherwise treat as a counts data.frame — coerce to matrix
@@ -425,10 +440,88 @@ coerce_survey_input <- function(counts, labels, levels) {
     if (is.null(levels) && !is.null(colnames(counts))) {
       levels <- colnames(counts)
     }
-    return(list(counts = mat, labels = labels, levels = levels))
+    return(list(counts = mat, labels = labels, levels = levels,
+                scores = NULL))
   }
 
-  list(counts = counts, labels = labels, levels = levels) # nocov
+  list(counts = counts, labels = labels, levels = levels, scores = NULL) # nocov
+}
+
+#' Calendar date of a date-time in its own time zone
+#'
+#' \code{as.Date()} on a POSIXct converts through UTC unless \code{tz} is
+#' given, so a local midnight east of UTC becomes the previous day. Formatting
+#' first keeps the calendar date of the time zone the date-time is in (its
+#' \code{tzone} attribute, else the session time zone).
+#'
+#' @param x A POSIXct or POSIXlt vector.
+#' @return A Date vector of the same length.
+#' @noRd
+.local_date <- function(x) {
+  stopifnot("`x` must be a date-time (POSIXt)" = inherits(x, "POSIXt"))
+  as.Date(format(x, "%Y-%m-%d"))
+}
+
+#' Save the session's random number state
+#'
+#' Records \code{.Random.seed} (or its absence) so a function that seeds the
+#' generator can put the caller's state back with
+#' \code{on.exit(restore(), add = TRUE)}.
+#'
+#' @return A function of no arguments that restores the recorded state.
+#' @noRd
+.save_rng <- function() {
+  env <- globalenv()
+  had_seed <- exists(".Random.seed", envir = env, inherits = FALSE)
+  old_seed <- if (had_seed) get(".Random.seed", envir = env, inherits = FALSE)
+  function() {
+    if (had_seed) {
+      assign(".Random.seed", old_seed, envir = env)
+    } else if (exists(".Random.seed", envir = env, inherits = FALSE)) {
+      rm(".Random.seed", envir = env)
+    }
+    invisible(NULL)
+  }
+}
+
+#' Pearson correlations between adjacent items
+#'
+#' Correlates each pair of items joined by a U-turn, using the respondents
+#' who answered both items (pairwise-complete observations).
+#'
+#' @param scores Respondent x item matrix of level positions, as returned in
+#'   \code{coerce_survey_input()$scores}, with columns in band order.
+#' @param from,to Integer vectors of column indices, one pair per arc.
+#' @return A data.frame with one row per arc and columns \code{from},
+#'   \code{to} (item names, the column names of \code{scores}), \code{r} (Pearson correlation; \code{NA} when
+#'   fewer than three respondents answered both items or either item is
+#'   constant among them) and \code{n} (respondents who answered both).
+#' @noRd
+.adjacent_correlations <- function(scores, from, to) {
+  stopifnot(
+    "`scores` must be a numeric matrix" = is.matrix(scores) &&
+      is.numeric(scores),
+    "`from` and `to` must have equal length" = length(from) == length(to)
+  )
+  stats_by_arc <- vapply(seq_along(from), function(a) {
+    x <- scores[, from[a]]
+    y <- scores[, to[a]]
+    both <- !is.na(x) & !is.na(y)
+    n <- sum(both)
+    x <- x[both]
+    y <- y[both]
+    r <- if (n >= 3L && stats::sd(x) > 0 && stats::sd(y) > 0) {
+      stats::cor(x, y)
+    } else {
+      NA_real_
+    }
+    c(r = r, n = n)
+  }, c(r = 0, n = 0))
+  items <- colnames(scores)
+  data.frame(from = items[from], to = items[to],
+             r = stats_by_arc["r", ],
+             n = as.integer(stats_by_arc["n", ]),
+             stringsAsFactors = FALSE)
 }
 
 #' Convert timestamp data to activity data format
@@ -453,7 +546,7 @@ prepare_timestamps <- function(data, day_format = NULL) {
   if (is.null(ts_col)) return(NULL)
 
   ts <- data[[ts_col]]
-  dates <- as.Date(ts)
+  dates <- .local_date(ts)
 
   # Day labels: auto-detect or use provided format
   if (is.null(day_format)) {

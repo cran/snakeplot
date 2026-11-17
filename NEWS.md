@@ -1,3 +1,37 @@
+# snakeplot 0.4.0
+
+## Changes
+
+* The correlation arcs of `survey_snake(arc_fill = "correlation")` are now
+  computed from respondent-level rows: Pearson r between adjacent items
+  across the respondents who answered both (pairwise-complete), `NA` when
+  fewer than three did or either item is constant among them. Previously
+  they were computed from the response counts.
+* `arc_fill = "correlation"` now requires raw responses (one row per
+  respondent, one column per item). Counts input and the `var`/`day` (ESM)
+  mode, which do not identify respondents, raise an error of class
+  `snakeplot_no_respondent_data`.
+* The returned `snake_layout` holds `correlations`, a data frame with one
+  row per U-turn (`from`, `to`, `r`, `n`), so the printed values can be
+  checked and reported.
+* The legend entry for the arcs reads "Item r (arc)" and uses `arc_color`.
+* Dates of date-times are taken in the time zone of the data. `as.Date()`
+  converted through UTC, so in time zones east of UTC `timeline_snake()`
+  labelled each phase one month early (a phase starting 2016-10 as
+  "Sep 2016"), and the `timestamp` mode of `survey_snake()` measured the
+  time of day of a prompt answered shortly after midnight from the previous
+  midnight, placing its tick beyond the end of the band.
+* `survey_snake()` restores the session's random number state on exit. It
+  still seeds its tick jitter with `seed` (default 42), so plots are
+  unchanged, but it no longer resets the caller's random number stream.
+
+## Documentation
+
+* New vignettes "Serpentine plots" and "Survey and experience sampling
+  responses"; guides on sequences and timelines, daily activity, and
+  palettes and layout; case studies on the bundled experience sampling
+  data.
+
 # snakeplot 0.3.0
 
 * New `flow` parameter on all snake functions: `"snake"` (boustrophedon,
